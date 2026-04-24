@@ -1,60 +1,55 @@
-🧊 STELLIO - STL Library Manager
+# 🧊 STELLIO - STL Library Manager
 
-STELLIO est une station de gestion de fichiers 3D moderne et intuitive. Inspirée par l'esthétique de l'écosystème Mainsail/Klipper, elle centralise tous vos modèles STL dans une interface unique, fluide et ultra-performante.
-✨ Points Forts & Fonctionnalités
-🖥️ Interface "Mainsail" Native
+**STELLIO** est une station de gestion de fichiers 3D moderne et intuitive. Inspirée par l'esthétique de l'écosystème **Mainsail/Klipper**, elle centralise tous vos modèles STL dans une interface unique, fluide et ultra-performante.
 
-Profitez d'un design professionnel conçu pour les passionnés d'impression 3D.
+---
 
-    Mode Sombre (Dark Mode) : Un confort visuel optimal pour vos longues sessions de préparation.
+## ✨ Points Forts & Fonctionnalités
 
-    Design Responsive : Une navigation fluide et organisée, pensée pour la productivité.
+### 🖥️ Interface "Mainsail" Native
+Profitez d'un design professionnel conçu pour les passionnés d'impression 3D. 
+* **Mode Sombre (Dark Mode) :** Un confort visuel optimal pour vos longues sessions de préparation.
+* **Design Responsive :** Une navigation fluide et organisée, pensée pour la productivité.
 
-🔍 Visionneuse 3D Intégrée
+### 🔍 Visionneuse 3D Intégrée
+Plus besoin d'ouvrir chaque fichier pour savoir ce qu'il contient. 
+* **Aperçu Interactif :** Visualisez vos STL en temps réel directement dans l'application grâce à un moteur 3D intégré.
+* **Performances Fluides :** Rendu rapide et précis pour inspecter vos modèles avant l'impression.
 
-Plus besoin d'ouvrir chaque fichier pour savoir ce qu'il contient.
+### 📂 Gestion de Bibliothèque Intelligente
+* **Multi-Sources :** Connectez vos dossiers locaux, vos disques externes ou vos partages réseau (**NAS / Samba**) en quelques secondes.
+* **Scan Ultra-Rapide :** Un moteur de recherche et d'indexation performant avec barre de progression en temps réel.
+* **Organisation Avancée :** Triez vos fichiers par nom, date d'ajout ou type pour ne plus jamais perdre un modèle.
 
-    Aperçu Interactif : Visualisez vos STL en temps réel directement dans l'application.
-
-    Performances Fluides : Rendu rapide et précis pour inspecter vos modèles avant l'impression.
-
-📂 Gestion de Bibliothèque Intelligente
-
-    Multi-Sources : Connectez vos dossiers locaux, vos disques externes ou vos partages réseau (NAS / Samba) en quelques secondes.
-
-    Scan Ultra-Rapide : Un moteur de recherche et d'indexation performant avec barre de progression en temps réel.
-
-    Organisation Avancée : Triez vos fichiers par nom, date d'ajout ou type de dossier pour ne plus jamais perdre un modèle.
-
-🚀 Intégration Directe avec les Slicers
-
+### 🚀 Intégration Directe avec les Slicers
 Gagnez du temps dans votre workflow de fabrication :
+* **Envoi en 1 clic :** Ouvrez vos fichiers directement dans votre logiciel de découpe préféré (**PrusaSlicer**, **Bambu Studio**, **OrcaSlicer**, **Creality Print**, etc.) via les protocoles natifs.
 
-    Envoi en 1 clic : Ouvrez vos fichiers directement dans votre logiciel de découpe préféré (PrusaSlicer, Bambu Studio, OrcaSlicer, Creality Print, etc.) via les protocoles natifs.
+### ⚙️ Personnalisation Totale
+* **Style Constructeur :** Adaptez l'interface aux couleurs de votre marque préférée (Bambu Lab, Prusa, Voron, Creality, etc.).
+* **Multilingue :** Entièrement disponible en Français et en Anglais.
 
-⚙️ Personnalisation Totale
+---
 
-    Style Constructeur : Adaptez l'interface aux couleurs de votre marque préférée (Bambu Lab, Prusa, Voron, etc.).
+## 🛠️ Comment ça marche ?
 
-    Multilingue : Disponible en Français et en Anglais.
+1.  **Indexation :** Ajoutez vos répertoires contenant vos fichiers STL dans les paramètres.
+2.  **Exploration :** Parcourez votre collection via le dashboard principal.
+3.  **Visualisation :** Cliquez sur un modèle pour l'inspecter en 3D.
+4.  **Préparation :** Lancez l'envoi vers votre Slicer pour préparer l'impression.
 
-🛠️ Comment ça marche ?
+---
 
-    Indexation : Ajoutez vos répertoires contenant vos fichiers STL dans les paramètres.
+## 📸 Aperçu de l'interface
 
-    Exploration : Parcourez votre collection via le dashboard principal.
+*Ajoutez ici vos captures d'écran pour présenter STELLIO sous son meilleur jour !*
 
-    Visualisation : Cliquez sur un modèle pour l'inspecter en 3D.
+---
 
-    Préparation : Lancez l'envoi vers votre Slicer pour préparer l'impression.
+## 📜 Licence
 
-📸 Captures d'écran
+Distribué sous la licence MIT. Voir le fichier `LICENSE` pour plus de détails.
 
-    [Insérez ici une capture de votre Dashboard principal]
-    [Insérez ici une capture de la Visionneuse 3D]
+---
 
-📜 Licence
-
-Distribué sous la licence MIT. Voir le fichier LICENSE pour plus de détails.
-
-STELLIO — Reprenez le contrôle de votre bibliothèque STL.
+**STELLIO — Reprenez le contrôle de votre bibliothèque STL.**
