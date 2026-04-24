@@ -1,31 +1,60 @@
-# 🧊 STELLIO - STL Library Manager
+🧊 STELLIO - STL Library Manager
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Framework](https://img.shields.io/badge/UI-TailwindCSS-38bdf8.svg)
-![Backend](https://img.shields.io/badge/Backend-Python-ffd343.svg)
+STELLIO est une station de gestion de fichiers 3D moderne et intuitive. Inspirée par l'esthétique de l'écosystème Mainsail/Klipper, elle centralise tous vos modèles STL dans une interface unique, fluide et ultra-performante.
+✨ Points Forts & Fonctionnalités
+🖥️ Interface "Mainsail" Native
 
-**STELLIO** est une interface moderne et ultra-rapide conçue pour les passionnés d'impression 3D. Organisez, prévisualisez et lancez vos fichiers STL en un clin d'œil, avec une esthétique inspirée du célèbre dashboard **Mainsail**.
+Profitez d'un design professionnel conçu pour les passionnés d'impression 3D.
 
----
+    Mode Sombre (Dark Mode) : Un confort visuel optimal pour vos longues sessions de préparation.
 
-## ✨ Caractéristiques
+    Design Responsive : Une navigation fluide et organisée, pensée pour la productivité.
 
-* **🔍 Aperçu 3D Temps Réel** : Visualisez vos fichiers STL directement dans le navigateur grâce à Three.js.
-* **📂 Gestion Multi-Sources** : Ajoutez des dossiers locaux ou des partages réseau (Samba/NAS).
-* **🎨 UI "Mainsail Style"** : Mode sombre natif, interface épurée et responsive.
-* **⚡ Tri & Recherche Avancés** : Filtrez par nom, date ou type de dossier instantanément.
-* **🚀 Slicer Integration** : Ouvrez vos fichiers directement dans votre slicer préféré (PrusaSlicer, Bambu Studio, Orca Slicer, etc.).
+🔍 Visionneuse 3D Intégrée
 
----
+Plus besoin d'ouvrir chaque fichier pour savoir ce qu'il contient.
 
-## 📸 Aperçu de l'interface
+    Aperçu Interactif : Visualisez vos STL en temps réel directement dans l'application.
 
-> [!TIP]
-> Ajoutez ici une capture d'écran de votre dashboard pour attirer l'œil des utilisateurs !
+    Performances Fluides : Rendu rapide et précis pour inspecter vos modèles avant l'impression.
 
----
+📂 Gestion de Bibliothèque Intelligente
 
-### 2. Installation des dépendances
-```bash
-pip install eel pyinstaller
+    Multi-Sources : Connectez vos dossiers locaux, vos disques externes ou vos partages réseau (NAS / Samba) en quelques secondes.
+
+    Scan Ultra-Rapide : Un moteur de recherche et d'indexation performant avec barre de progression en temps réel.
+
+    Organisation Avancée : Triez vos fichiers par nom, date d'ajout ou type de dossier pour ne plus jamais perdre un modèle.
+
+🚀 Intégration Directe avec les Slicers
+
+Gagnez du temps dans votre workflow de fabrication :
+
+    Envoi en 1 clic : Ouvrez vos fichiers directement dans votre logiciel de découpe préféré (PrusaSlicer, Bambu Studio, OrcaSlicer, Creality Print, etc.) via les protocoles natifs.
+
+⚙️ Personnalisation Totale
+
+    Style Constructeur : Adaptez l'interface aux couleurs de votre marque préférée (Bambu Lab, Prusa, Voron, etc.).
+
+    Multilingue : Disponible en Français et en Anglais.
+
+🛠️ Comment ça marche ?
+
+    Indexation : Ajoutez vos répertoires contenant vos fichiers STL dans les paramètres.
+
+    Exploration : Parcourez votre collection via le dashboard principal.
+
+    Visualisation : Cliquez sur un modèle pour l'inspecter en 3D.
+
+    Préparation : Lancez l'envoi vers votre Slicer pour préparer l'impression.
+
+📸 Captures d'écran
+
+    [Insérez ici une capture de votre Dashboard principal]
+    [Insérez ici une capture de la Visionneuse 3D]
+
+📜 Licence
+
+Distribué sous la licence MIT. Voir le fichier LICENSE pour plus de détails.
+
+STELLIO — Reprenez le contrôle de votre bibliothèque STL.
