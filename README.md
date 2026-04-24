@@ -26,14 +26,6 @@
 
 ---
 
-## 🛠️ Installation & Compilation (Windows)
-
-Le projet utilise **Python** pour la logique système et des technologies **Web** pour l'interface.
-
-### 1. Prérequis
-* Python 3.10+
-* Inno Setup (pour créer l'installateur)
-
 ### 2. Installation des dépendances
 ```bash
 pip install eel pyinstaller
