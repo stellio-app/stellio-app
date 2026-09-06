@@ -195,6 +195,7 @@ import base64
 from pathlib import Path
 from functools import wraps
 from flask import Flask, request, jsonify, session, send_file, Response
+from werkzeug.utils import secure_filename
 import trimesh.transformations as tra
 import io
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -1011,6 +1012,18 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id)
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS remote_instances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        peer_key TEXT NOT NULL,
+        inbox_folder TEXT,
+        last_status TEXT,
+        last_seen_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )""")
     c.execute("""CREATE TABLE IF NOT EXISTS printers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -1239,6 +1252,14 @@ def migrate_print_history():
             c.execute("ALTER TABLE print_history ADD COLUMN elec_cost REAL")
         if 'total_cost' not in columns:
             c.execute("ALTER TABLE print_history ADD COLUMN total_cost REAL")
+        if 'printer_id' not in columns:
+            c.execute("ALTER TABLE print_history ADD COLUMN printer_id INTEGER")
+        if 'estimated_seconds' not in columns:
+            c.execute("ALTER TABLE print_history ADD COLUMN estimated_seconds REAL")
+        if 'actual_seconds' not in columns:
+            c.execute("ALTER TABLE print_history ADD COLUMN actual_seconds REAL")
+        if 'time_recorded_at' not in columns:
+            c.execute("ALTER TABLE print_history ADD COLUMN time_recorded_at TIMESTAMP")
         conn.commit()
     except Exception as e:
         app_logger.info(f"[ERROR] migrate_print_history: {e}")
@@ -6585,6 +6606,232 @@ def download_shared_file(token):
     response.call_on_close(_invalidate_token)
     return response
 
+def _get_or_create_local_peer_key():
+    settings = load_settings()
+    if not settings.get('local_peer_key'):
+        settings['local_peer_key'] = secrets.token_urlsafe(24)
+        save_settings(settings)
+    return settings['local_peer_key']
+
+def _get_primary_user_id():
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
+        return row['id'] if row else None
+    finally:
+        conn.close()
+
+def require_peer_key(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        provided = request.headers.get('X-Stellio-Peer-Key', '')
+        expected = _get_or_create_local_peer_key()
+        if not provided or not secrets.compare_digest(provided, expected):
+            return jsonify({"error": "Clé d'appairage invalide ou manquante"}), 403
+        return f(*args, **kwargs)
+    return wrapper
+
+
+@app.route('/api/remote-instances', methods=['GET'])
+@login_required
+def api_remote_instances_list():
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, url, inbox_folder, last_status, last_seen_at, created_at FROM remote_instances WHERE user_id=? ORDER BY created_at ASC",
+            (session['user_id'],)
+        ).fetchall()
+        return jsonify({"instances": [dict(r) for r in rows], "local_peer_key": _get_or_create_local_peer_key()}), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/remote-instances', methods=['POST'])
+@login_required
+def api_remote_instances_add():
+    data = request.json or {}
+    name = (data.get('name') or '').strip()
+    url = (data.get('url') or '').strip().rstrip('/')
+    peer_key = (data.get('peer_key') or '').strip()
+    inbox_folder = (data.get('inbox_folder') or '').strip() or None
+
+    if not name or not url or not peer_key:
+        return jsonify({"error": "Nom, adresse et clé d'appairage requis"}), 400
+    if not url.startswith('http://') and not url.startswith('https://'):
+        url = f"http://{url}"
+
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO remote_instances (user_id, name, url, peer_key, inbox_folder) VALUES (?,?,?,?,?)",
+            (session['user_id'], name, url, peer_key, inbox_folder)
+        )
+        conn.commit()
+        return jsonify({"success": True, "id": cur.lastrowid}), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/remote-instances/<int:instance_id>', methods=['DELETE'])
+@login_required
+def api_remote_instances_delete(instance_id):
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM remote_instances WHERE id=? AND user_id=?", (instance_id, session['user_id']))
+        conn.commit()
+        return jsonify({"success": True}), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/remote-instances/<int:instance_id>/ping', methods=['POST'])
+@login_required
+def api_remote_instances_ping(instance_id):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM remote_instances WHERE id=? AND user_id=?", (instance_id, session['user_id'])
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Instance introuvable"}), 404
+
+        try:
+            r = requests.get(
+                f"{row['url']}/api/peer/handshake", timeout=5,
+                headers={"X-Stellio-Peer-Key": row['peer_key']}
+            )
+            if r.ok:
+                remote_info = r.json()
+                conn.execute(
+                    "UPDATE remote_instances SET last_status='online', last_seen_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (instance_id,)
+                )
+                conn.commit()
+                return jsonify({"status": "online", "remote": remote_info}), 200
+            conn.execute("UPDATE remote_instances SET last_status='error' WHERE id=?", (instance_id,))
+            conn.commit()
+            if r.status_code == 403:
+                return jsonify({"status": "error", "error": "Clé d'appairage refusée par l'autre instance"}), 200
+            return jsonify({"status": "error", "error": f"Réponse HTTP {r.status_code}"}), 200
+        except Exception as e:
+            conn.execute("UPDATE remote_instances SET last_status='offline' WHERE id=?", (instance_id,))
+            conn.commit()
+            return jsonify({"status": "offline", "error": "Instance injoignable"}), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/remote-instances/<int:instance_id>/send', methods=['POST'])
+@login_required
+def api_remote_instances_send(instance_id):
+    data = request.json or {}
+    file_path = (data.get('file_path') or '').strip()
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"error": "Fichier introuvable"}), 404
+    if not _is_path_within_sources(file_path, session['user_id']):
+        return jsonify({"error": "Ce fichier n'appartient à aucune source configurée"}), 403
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM remote_instances WHERE id=? AND user_id=?", (instance_id, session['user_id'])
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": "Instance introuvable"}), 404
+
+    _cleanup_expired_shares()
+    token = secrets.token_urlsafe(24)
+    with _share_lock:
+        _share_links[token] = {
+            'path': file_path, 'name': os.path.basename(file_path), 'created': time.time(),
+        }
+    local_ip = get_local_ip()
+    share_url = f"http://{local_ip}:5000/share/{token}"
+
+    try:
+        r = requests.post(
+            f"{row['url']}/api/peer/receive-file", timeout=20,
+            headers={"X-Stellio-Peer-Key": row['peer_key']},
+            json={"url": share_url, "filename": os.path.basename(file_path)}
+        )
+        if r.ok:
+            app_logger.info(f"[RemoteInstance] Fichier {os.path.basename(file_path)} envoyé vers '{row['name']}'")
+            return jsonify({"success": True}), 200
+        with _share_lock:
+            _share_links.pop(token, None)
+        if r.status_code == 403:
+            return jsonify({"error": "Clé d'appairage refusée par l'autre instance"}), 502
+        return jsonify({"error": f"L'autre instance a refusé le fichier (HTTP {r.status_code})"}), 502
+    except Exception as e:
+        with _share_lock:
+            _share_links.pop(token, None)
+        app_logger.warning(f"[RemoteInstance] Envoi échoué vers '{row['name']}': {e}")
+        return jsonify({"error": "Instance injoignable"}), 503
+
+
+@app.route('/api/peer/handshake', methods=['GET'])
+@require_peer_key
+def api_peer_handshake():
+    settings = load_settings()
+    return jsonify({
+        "name": settings.get('instance_name') or platform.node(),
+        "version": get_current_version(),
+    }), 200
+
+
+@app.route('/api/peer/receive-file', methods=['POST'])
+@require_peer_key
+def api_peer_receive_file():
+    data = request.json or {}
+    share_url = (data.get('url') or '').strip()
+    filename = secure_filename((data.get('filename') or '').strip()) or 'fichier_recu'
+    if not share_url:
+        return jsonify({"error": "URL manquante"}), 400
+
+    user_id = _get_primary_user_id()
+    if not user_id:
+        return jsonify({"error": "Aucun utilisateur configuré sur cette instance"}), 500
+
+    conn = get_db()
+    try:
+        inbox_row = conn.execute(
+            """SELECT inbox_folder FROM remote_instances
+               WHERE user_id=? AND inbox_folder IS NOT NULL AND inbox_folder != '' LIMIT 1""",
+            (user_id,)
+        ).fetchone()
+        inbox_folder = inbox_row['inbox_folder'] if inbox_row else None
+        if not inbox_folder:
+            folder_row = conn.execute(
+                "SELECT path FROM sources WHERE user_id=? AND type='folder' LIMIT 1", (user_id,)
+            ).fetchone()
+            inbox_folder = folder_row['path'] if folder_row else None
+    finally:
+        conn.close()
+
+    if not inbox_folder or not os.path.isdir(inbox_folder):
+        return jsonify({"error": "Aucun dossier de réception disponible sur cette instance"}), 500
+
+    try:
+        r = requests.get(share_url, timeout=30, stream=True)
+        if not r.ok:
+            return jsonify({"error": f"Téléchargement échoué depuis l'instance émettrice (HTTP {r.status_code})"}), 502
+        dest_path = os.path.join(inbox_folder, filename)
+        base, ext = os.path.splitext(dest_path)
+        counter = 1
+        while os.path.exists(dest_path):
+            dest_path = f"{base} ({counter}){ext}"
+            counter += 1
+        with open(dest_path, 'wb') as out:
+            for chunk in r.iter_content(chunk_size=65536):
+                out.write(chunk)
+        app_logger.info(f"[RemoteInstance] Fichier reçu et enregistré: {dest_path}")
+        return jsonify({"success": True, "saved_as": os.path.basename(dest_path)}), 200
+    except Exception as e:
+        app_logger.warning(f"[RemoteInstance] Réception échouée: {e}")
+        return jsonify({"error": "Échec de la récupération du fichier"}), 502
+
 
 def _get_all_source_paths(user_id):
     try:
@@ -7170,6 +7417,14 @@ def api_get_stats():
             spent_this_month = round(cost_row[2] or 0, 2)
             avg_cost_per_print = round(total_spent / costed_prints, 2) if costed_prints else None
 
+            failed_cost_row = conn.execute(
+                """SELECT COALESCE(SUM(total_cost), 0), COUNT(*)
+                   FROM print_history WHERE user_id=? AND result='failed' AND total_cost IS NOT NULL""",
+                (user_id,)
+            ).fetchone()
+            failed_prints_cost = round(failed_cost_row[0] or 0, 2)
+            failed_prints_count = failed_cost_row[1] or 0
+
             platform_rows = conn.execute(
                 """SELECT platform, COUNT(*) as cnt
                    FROM download_history
@@ -7238,6 +7493,8 @@ def api_get_stats():
             "total_spent": total_spent,
             "spent_this_month": spent_this_month,
             "avg_cost_per_print": avg_cost_per_print,
+            "failed_prints_cost": failed_prints_cost,
+            "failed_prints_count": failed_prints_count,
             "top_printed": [{"name": r["file_name"], "count": r["cnt"]} for r in top_printed],
             "by_platform": by_platform,
             "profile_reliability": profile_reliability,
@@ -8377,6 +8634,13 @@ def api_request_slice_estimate():
 
     return jsonify(result), 202
 
+def _get_cached_slice_estimate_seconds(file_path):
+    with slice_estimate_lock:
+        entry = slice_estimate_results.get(file_path)
+    if entry and entry.get('status') == 'done':
+        return entry.get('data', {}).get('time_seconds')
+    return None
+
 @app.route('/api/slicer/pre-slice-estimate', methods=['GET'])
 @login_required
 def api_get_slice_estimate():
@@ -8534,15 +8798,16 @@ def api_send_to_slicer():
                                 spool_id_logged = None
 
             material_cost, elec_cost, total_cost, _weight_for_cost = _compute_estimated_cost(norm, weight_g_hint=weight_used_logged)
+            estimated_seconds_logged = _get_cached_slice_estimate_seconds(norm)
 
             cur = conn.execute(
-                "INSERT INTO print_history (user_id, file_path, file_name, file_size, file_ext, slicer, source_platform, spool_id, spool_weight_used_g, slicer_profile_id, slicer_profile_name, material_cost, elec_cost, total_cost) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO print_history (user_id, file_path, file_name, file_size, file_ext, slicer, source_platform, spool_id, spool_weight_used_g, slicer_profile_id, slicer_profile_name, material_cost, elec_cost, total_cost, printer_id, estimated_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (session['user_id'], norm, os.path.basename(file_path),
                  os.path.getsize(file_path) if os.path.exists(file_path) else 0,
                  os.path.splitext(file_path)[1].lower(), detected_slicer,
                  detect_platform_from_path(norm), spool_id_logged, weight_used_logged,
                  data.get('slicer_profile_id') or (applied_profile_ids[0] if applied_profile_ids else ''), data.get('slicer_profile_name') or '',
-                 material_cost, elec_cost, total_cost)
+                 material_cost, elec_cost, total_cost, printer_id, estimated_seconds_logged)
             )
             history_id = cur.lastrowid
             conn.commit()
@@ -8551,7 +8816,8 @@ def api_send_to_slicer():
             app_logger.warning(f"[PrintHistory] Log échoué: {log_err}")
             history_id = None
 
-        return jsonify({"message": f"Envoyé via {detected_slicer}", "history_id": history_id}), 200
+        return jsonify({"message": f"Envoyé via {detected_slicer}", "history_id": history_id,
+                         "stock_warning": (_check_restock_for_files([file_path], session['user_id']) or [None])[0]}), 200
 
     except Exception as e:
         app_logger.error(f"[API] Erreur non gérée: {e}")
@@ -8623,12 +8889,14 @@ def api_slicer_send_batch():
                 for fp in file_paths:
                     norm = fp.replace('\\', '/')
                     material_cost, elec_cost, total_cost, _w = _compute_estimated_cost(norm)
+                    estimated_seconds_logged = _get_cached_slice_estimate_seconds(norm)
                     conn.execute(
-                        "INSERT INTO print_history (user_id, file_path, file_name, file_size, file_ext, slicer, source_platform, slicer_profile_id, material_cost, elec_cost, total_cost) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO print_history (user_id, file_path, file_name, file_size, file_ext, slicer, source_platform, slicer_profile_id, material_cost, elec_cost, total_cost, printer_id, estimated_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (session['user_id'], norm, os.path.basename(fp),
                          os.path.getsize(fp) if os.path.exists(fp) else 0,
                          os.path.splitext(fp)[1].lower(), slicer_label,
-                         detect_platform_from_path(norm), profile_id_to_log, material_cost, elec_cost, total_cost)
+                         detect_platform_from_path(norm), profile_id_to_log, material_cost, elec_cost, total_cost,
+                         printer_id, estimated_seconds_logged)
                     )
                 conn.commit()
             finally:
@@ -8638,7 +8906,8 @@ def api_slicer_send_batch():
 
         return jsonify({
             "message": f"{len(file_paths)} fichiers ouverts dans le slicer",
-            "count": len(file_paths)
+            "count": len(file_paths),
+            "stock_warnings": _check_restock_for_files(file_paths, session['user_id'])
         }), 200
 
     except Exception as e:
@@ -11193,7 +11462,7 @@ from packaging import version
 
 GITHUB_REPO = "stellio-app/stellio"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-CURRENT_VERSION = "0.6.5"
+CURRENT_VERSION = "0.6.6"
 
 def _fetch_expected_sha256(release_data, target_filename):
     try:
@@ -11733,6 +12002,14 @@ def api_printer_status(pid):
             app_logger.warning(f"[PrinterStatus] Écriture ignorée (verrou DB persistant) pour l'imprimante {pid}: {e}")
             break
     conn.close()
+
+    last_print = status.get('last_print') or {}
+    if last_print.get('filename') and last_print.get('duration'):
+        try:
+            _autofill_actual_print_time(session['user_id'], pid, last_print['filename'],
+                                         last_print['duration'], last_print.get('finished_at'))
+        except Exception as e:
+            app_logger.info(f"[PrinterStatus] autofill temps réel ignoré: {e}")
 
     return jsonify(status)
 
@@ -12627,6 +12904,102 @@ def api_ollama_recommend_model():
     return jsonify({'hardware': hw, 'recommendation': rec}), 200
 
 
+
+MIN_SAMPLES_FOR_CORRECTION = 3
+CORRECTION_FACTOR_BOUNDS = (0.5, 2.0)
+
+def _get_print_time_correction_factor(user_id, printer_id=None, slicer_profile_id=None):
+    conn = get_db()
+    try:
+        def _fetch(where_extra, params_extra):
+            query = """SELECT estimated_seconds, actual_seconds FROM print_history
+                       WHERE user_id=? AND estimated_seconds IS NOT NULL AND estimated_seconds > 0
+                       AND actual_seconds IS NOT NULL AND actual_seconds > 0""" + where_extra
+            return conn.execute(query, (user_id, *params_extra)).fetchall()
+
+        rows, scope = [], 'global'
+        if printer_id and slicer_profile_id:
+            rows = _fetch(" AND printer_id=? AND slicer_profile_id=?", (printer_id, slicer_profile_id))
+            scope = 'printer+profile'
+        if len(rows) < MIN_SAMPLES_FOR_CORRECTION and printer_id:
+            rows = _fetch(" AND printer_id=?", (printer_id,))
+            scope = 'printer'
+        if len(rows) < MIN_SAMPLES_FOR_CORRECTION:
+            rows = _fetch("", ())
+            scope = 'global'
+    finally:
+        conn.close()
+
+    if len(rows) < MIN_SAMPLES_FOR_CORRECTION:
+        return {'factor': 1.0, 'confidence': 'low', 'sample_size': len(rows), 'scope': scope}
+
+    ratios = sorted(r['actual_seconds'] / r['estimated_seconds'] for r in rows)
+    median = ratios[len(ratios) // 2] if len(ratios) % 2 == 1 else \
+        (ratios[len(ratios) // 2 - 1] + ratios[len(ratios) // 2]) / 2
+    factor = max(CORRECTION_FACTOR_BOUNDS[0], min(CORRECTION_FACTOR_BOUNDS[1], median))
+    confidence = 'high' if len(rows) >= 10 else 'medium'
+    return {'factor': round(factor, 3), 'confidence': confidence, 'sample_size': len(rows), 'scope': scope}
+
+def _autofill_actual_print_time(user_id, printer_id, file_name, duration_seconds, finished_at=None):
+    if not duration_seconds or duration_seconds < 60 or not file_name:
+        return
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT id FROM print_history
+               WHERE user_id=? AND file_name=? AND actual_seconds IS NULL
+               AND sent_at >= datetime('now', '-72 hours')
+               ORDER BY sent_at DESC LIMIT 1""",
+            (user_id, file_name)
+        ).fetchone()
+        if not row:
+            return
+        conn.execute(
+            """UPDATE print_history SET actual_seconds=?, printer_id=COALESCE(printer_id, ?),
+               time_recorded_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (duration_seconds, printer_id, row['id'])
+        )
+        conn.commit()
+    except Exception as e:
+        app_logger.info(f"[AI][PrintTime] autofill ignoré: {e}")
+    finally:
+        conn.close()
+
+@app.route('/api/ai/predict-print-time', methods=['POST'])
+@login_required
+def api_ai_predict_print_time():
+    data = request.json or {}
+    file_path = (data.get('path') or '').strip()
+    printer_id = data.get('printer_id')
+    slicer_profile_id = data.get('slicer_profile_id')
+    if not file_path:
+        return jsonify({"error": "Chemin requis"}), 400
+
+    estimated_seconds = _get_cached_slice_estimate_seconds(file_path.replace('\\', '/'))
+    if estimated_seconds is None:
+        return jsonify({"status": "pending",
+                         "message": "Estimation du slicer pas encore disponible pour ce fichier."}), 202
+
+    correction = _get_print_time_correction_factor(session['user_id'], printer_id, slicer_profile_id)
+    corrected_seconds = int(estimated_seconds * correction['factor'])
+
+    def _fmt(seconds):
+        h, m = seconds // 3600, (seconds % 3600) // 60
+        return f"{h}h {m}min" if h > 0 else f"{m}min"
+
+    return jsonify({
+        "status": "done",
+        "estimated_seconds": int(estimated_seconds),
+        "estimated_formatted": _fmt(int(estimated_seconds)),
+        "corrected_seconds": corrected_seconds,
+        "corrected_formatted": _fmt(corrected_seconds),
+        "correction_factor": correction['factor'],
+        "confidence": correction['confidence'],
+        "sample_size": correction['sample_size'],
+        "scope": correction['scope'],
+    }), 200
+
+
 @app.route('/api/ollama/auto-tag', methods=['POST'])
 @login_required
 def api_ollama_auto_tag():
@@ -12672,6 +13045,46 @@ def api_ollama_auto_tag():
         return jsonify({"error": str(e)}), 503
     except Exception as e:
         app_logger.error(f"[AutoTag] {e}")
+        return jsonify({"error": "Une erreur interne est survenue lors du traitement de la requête"}), 500
+
+
+@app.route('/api/ollama/explain-orientation', methods=['POST'])
+@login_required
+def api_ollama_explain_orientation():
+    data = request.json or {}
+    filename = (data.get('filename') or '').strip()
+    suggestions = data.get('suggestions') or []
+    if not suggestions:
+        return jsonify({"error": "Aucune suggestion à expliquer"}), 400
+
+    lang = get_user_lang()
+    lang_name = LANG_NAMES.get(lang, lang)
+
+    lines = []
+    for i, s in enumerate(suggestions[:3]):
+        lines.append(
+            f"{i+1}. {s.get('key', '?')} — surplomb: {s.get('overhangPct', 0)}%, "
+            f"contact plateau: {s.get('contactPct', 0)}%"
+        )
+    prompt = (
+        f"3D print file: \"{filename}\"\n"
+        f"Geometric analysis already computed locally (not by you) ranked these plate orientations, "
+        f"best first:\n" + "\n".join(lines) +
+        f"\nIn 2-3 short sentences, explain in {lang_name} why orientation #1 is the best choice here "
+        f"(less overhang = less support material, more bed contact = better adhesion). "
+        f"Reply ONLY with the explanation, in {lang_name}, no preamble."
+    )
+    system = f"You explain 3D printing orientation trade-offs simply, for a hobbyist. Always reply in {lang_name}."
+
+    try:
+        text, source = _call_ai(prompt, system=system, num_predict=180)
+        return jsonify({"explanation": text, "source": source}), 200
+    except AIDisabledError as e:
+        return jsonify({"error": str(e), "ai_disabled": True}), 403
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        app_logger.error(f"[ExplainOrientation] {e}")
         return jsonify({"error": "Une erreur interne est survenue lors du traitement de la requête"}), 500
 
 
@@ -13820,6 +14233,7 @@ def _normalize_profile(raw, slicer, name, source_filename, source_path=None, typ
         "slicer": slicer,
         "source_filename": source_filename,
         "source_path": source_path,
+        "source_mtime": (lambda: (os.path.getmtime(source_path) if source_path and os.path.isfile(source_path) else None))(),
         "imported_at": datetime.datetime.now().isoformat(timespec='seconds'),
         "printer_id": None,
         "printer_match_confirmed": False,
@@ -14076,10 +14490,64 @@ def _scan_dir_for_profiles(dir_path, already_imported, imported_out, slicer_hint
             app_logger.debug(f"[SlicerProfiles] Ignoré {fpath}: {e}")
 
 
+def _refresh_stale_slicer_profiles(profiles):
+    updated_count = 0
+    errors = []
+    for p in profiles:
+        source_path = p.get('source_path')
+        if not source_path or not os.path.isfile(source_path):
+            continue
+        try:
+            if os.path.commonpath([os.path.normpath(source_path), os.path.normpath(IMPORTED_PROFILES_DIR)]) == os.path.normpath(IMPORTED_PROFILES_DIR):
+                continue  
+        except ValueError:
+            pass  
+
+        try:
+            current_mtime = os.path.getmtime(source_path)
+        except OSError:
+            continue
+        if p.get('source_mtime') is not None and abs(current_mtime - p['source_mtime']) < 1:
+            continue  
+
+        try:
+            with open(source_path, 'rb') as f:
+                content = f.read()
+            fresh_versions = _parse_slicer_profile_file(
+                os.path.basename(source_path), content,
+                slicer_hint=p.get('slicer'), source_path=source_path,
+                type_hint=p.get('profile_type')
+            )
+            if not fresh_versions:
+                continue
+            fresh = fresh_versions[0]
+            for key in ('name', 'layer_height', 'nozzle_diameter', 'material_type', 'infill_density',
+                        'infill_pattern', 'wall_count', 'top_layers', 'bottom_layers',
+                        'supports_enabled', 'print_speed', 'nozzle_temp', 'bed_temp'):
+                if fresh.get(key) is not None:
+                    p[key] = fresh[key]
+            p['source_mtime'] = current_mtime
+            p['last_synced_at'] = datetime.datetime.now().isoformat(timespec='seconds')
+            updated_count += 1
+        except Exception as e:
+            errors.append({'profile': p.get('name'), 'error': str(e)})
+            app_logger.debug(f"[SlicerProfiles] Rafraîchissement échoué pour {p.get('name')}: {e}")
+
+    if updated_count:
+        save_slicer_profiles(profiles)
+    return updated_count, errors
+
+
 @app.route('/api/slicer-profiles', methods=['GET'])
 @login_required
 def api_slicer_profiles_list():
-    return jsonify({"profiles": load_slicer_profiles()}), 200
+    profiles = load_slicer_profiles()
+    _refresh_stale_slicer_profiles(profiles)  
+    try:
+        _autodetect_new_slicer_profiles(profiles, session['user_id'])  
+    except Exception as e:
+        app_logger.debug(f"[SlicerProfiles] Auto-détection silencieuse ignorée: {e}")
+    return jsonify({"profiles": profiles}), 200
 
 
 @app.route('/api/slicer-profiles/import', methods=['POST'])
@@ -14243,66 +14711,78 @@ def _scan_creality_print_dir(base_path, already_imported, imported_out):
                                         type_hint=SLICER_SUBDIR_TYPE_HINTS.get(sd))
 
 
+@app.route('/api/slicer-profiles/refresh', methods=['POST'])
+@login_required
+def api_slicer_profiles_refresh():
+    profiles = load_slicer_profiles()
+    updated_count, errors = _refresh_stale_slicer_profiles(profiles)
+    return jsonify({"updated": updated_count, "total": len(profiles), "profiles": profiles, "errors": errors}), 200
+
+
+def _autodetect_new_slicer_profiles(profiles, user_id):
+    appdata = os.environ.get('APPDATA')
+    if not appdata:
+        return [] 
+
+    already_imported = {p.get('source_filename') for p in profiles}
+    imported = []
+
+    for slicer, (base_rel, subdirs) in SLICER_AUTODETECT_DIRS.items():
+        base_path = os.path.join(appdata, base_rel)
+        for sd in subdirs:
+            _scan_dir_for_profiles(os.path.join(base_path, sd), already_imported, imported, slicer_hint=slicer,
+                                    type_hint=SLICER_SUBDIR_TYPE_HINTS.get(sd))
+
+    for slicer, (base_rel, subdirs) in SLICER_VERSIONED_USER_DIRS.items():
+        _scan_versioned_user_dir(os.path.join(appdata, base_rel), subdirs, already_imported, imported, slicer_hint=slicer)
+
+    for slicer, folder_name in SLICER_CURA_FAMILY_DIRS.items():
+        family_base = os.path.join(appdata, folder_name)
+        if not os.path.isdir(family_base):
+            continue
+        try:
+            versions = os.listdir(family_base)
+        except Exception as e:
+            versions = []
+            app_logger.debug(f"[SlicerProfiles] Dossier {folder_name} illisible: {e}")
+        for entry in versions:
+            versioned = os.path.join(family_base, entry)
+            if os.path.isdir(versioned):
+                _scan_dir_for_profiles(os.path.join(versioned, 'quality_changes'), already_imported, imported, slicer_hint=slicer,
+                                        type_hint='process')
+                _scan_dir_for_profiles(os.path.join(versioned, 'user'), already_imported, imported, slicer_hint=slicer)
+
+    _scan_creality_print_dir(os.path.join(appdata, 'Creality', 'Creality Print'), already_imported, imported)
+
+    seen_cura_keys = set()
+    deduped = []
+    for p in imported:
+        if p.get('slicer') == 'cura':
+            key = (p.get('name', '').strip().lower(), p.get('profile_type'))
+            if key in seen_cura_keys:
+                continue
+            seen_cura_keys.add(key)
+        deduped.append(p)
+    imported = deduped
+
+    if imported:
+        _apply_printer_autoguess(imported, user_id)
+        profiles.extend(imported)
+        save_slicer_profiles(profiles)
+        app_logger.info(f"[SlicerProfiles] {len(imported)} profil(s) importé(s) automatiquement (tous slicers)")
+
+    return imported
+
+
 @app.route('/api/slicer-profiles/auto-detect', methods=['POST'])
 @login_required
 def api_slicer_profiles_autodetect():
-    appdata = os.environ.get('APPDATA')
-    if not appdata:
-        return jsonify({"error": "Dossier AppData introuvable (fonction disponible sous Windows uniquement)"}), 400
-
     try:
         profiles = load_slicer_profiles()
-        already_imported = {p.get('source_filename') for p in profiles}
-        imported = []
-
-        for slicer, (base_rel, subdirs) in SLICER_AUTODETECT_DIRS.items():
-            base_path = os.path.join(appdata, base_rel)
-            for sd in subdirs:
-                _scan_dir_for_profiles(os.path.join(base_path, sd), already_imported, imported, slicer_hint=slicer,
-                                        type_hint=SLICER_SUBDIR_TYPE_HINTS.get(sd))
-
-        for slicer, (base_rel, subdirs) in SLICER_VERSIONED_USER_DIRS.items():
-            _scan_versioned_user_dir(os.path.join(appdata, base_rel), subdirs, already_imported, imported, slicer_hint=slicer)
-
-        for slicer, folder_name in SLICER_CURA_FAMILY_DIRS.items():
-            family_base = os.path.join(appdata, folder_name)
-            if not os.path.isdir(family_base):
-                continue
-            try:
-                versions = os.listdir(family_base)
-            except Exception as e:
-                versions = []
-                app_logger.debug(f"[SlicerProfiles] Dossier {folder_name} illisible: {e}")
-            for entry in versions:
-                versioned = os.path.join(family_base, entry)
-                if os.path.isdir(versioned):
-                    _scan_dir_for_profiles(os.path.join(versioned, 'quality_changes'), already_imported, imported, slicer_hint=slicer,
-                                            type_hint='process')
-
-
-                    _scan_dir_for_profiles(os.path.join(versioned, 'user'), already_imported, imported, slicer_hint=slicer)
-
-        _scan_creality_print_dir(os.path.join(appdata, 'Creality', 'Creality Print'), already_imported, imported)
-
-        seen_cura_keys = set()
-        deduped = []
-        for p in imported:
-            if p.get('slicer') == 'cura':
-                key = (p.get('name', '').strip().lower(), p.get('profile_type'))
-                if key in seen_cura_keys:
-                    continue
-                seen_cura_keys.add(key)
-            deduped.append(p)
-        imported = deduped
-
-        if imported:
-            _apply_printer_autoguess(imported, session['user_id'])
-            profiles.extend(imported)
-            save_slicer_profiles(profiles)
-            app_logger.info(f"[SlicerProfiles] Auto-détection : {len(imported)} profil(s) importé(s)")
-
+        imported = _autodetect_new_slicer_profiles(profiles, session['user_id'])
+        if not os.environ.get('APPDATA'):
+            return jsonify({"error": "Dossier AppData introuvable (fonction disponible sous Windows uniquement)"}), 400
         return jsonify({"imported": imported, "count": len(imported), "profiles": profiles}), 200
-
     except Exception as e:
         app_logger.error(f"[SlicerProfiles] Auto-détection échouée: {e}", exc_info=True)
         return jsonify({"error": f"Échec de la détection automatique : {e}"}), 500
@@ -14891,6 +15371,92 @@ def api_spoolman_spools():
         app_logger.error(f"[Spoolman] Erreur: {e}")
         return jsonify({"error": "Une erreur interne est survenue lors du traitement de la requête"}), 500
 
+def _get_spool_remaining_g(source_type, source_id, user_id):
+    if source_type == 'manual':
+        try:
+            conn = get_db()
+            row = conn.execute(
+                "SELECT remaining_g FROM manual_filament_spools WHERE id=? AND user_id=?",
+                (int(source_id), user_id)
+            ).fetchone()
+            conn.close()
+            return row['remaining_g'] if row and row['remaining_g'] is not None else None
+        except Exception:
+            return None
+    elif source_type == 'spoolman':
+        try:
+            conn = get_db()
+            row = conn.execute(
+                """SELECT spoolman_url FROM filament_assignments
+                   WHERE source_type='spoolman' AND source_id=? AND user_id=?
+                   ORDER BY assigned_at DESC LIMIT 1""",
+                (str(source_id), user_id)
+            ).fetchone()
+            conn.close()
+            if not row or not row['spoolman_url']:
+                return None
+            r = requests.get(f"{row['spoolman_url']}/api/v1/spool/{source_id}", timeout=5,
+                              headers={"Accept": "application/json"})
+            if not r.ok:
+                return None
+            return r.json().get('remaining_weight')
+        except Exception:
+            return None
+    return None
+
+def _check_restock_for_files(file_paths, user_id):
+    conn = get_db()
+    try:
+        needs = {}
+        for fp in file_paths:
+            norm = fp.replace('\\', '/')
+            assignment = conn.execute(
+                "SELECT source_type, source_id, source_label, material FROM filament_assignments WHERE file_path=? AND user_id=?",
+                (norm, user_id)
+            ).fetchone()
+            if not assignment:
+                continue
+            required_g, _ = _get_required_weight_for_file(norm)
+            if not required_g:
+                continue
+            key = (assignment['source_type'], assignment['source_id'])
+            entry = needs.setdefault(key, {
+                'source_type': assignment['source_type'], 'source_id': assignment['source_id'],
+                'label': assignment['source_label'] or assignment['material'] or 'Bobine',
+                'required_g': 0, 'files': []
+            })
+            entry['required_g'] += required_g
+            entry['files'].append(os.path.basename(norm))
+    finally:
+        conn.close()
+
+    alerts = []
+    for (source_type, source_id), entry in needs.items():
+        remaining_g = _get_spool_remaining_g(source_type, source_id, user_id)
+        if remaining_g is not None and remaining_g < entry['required_g']:
+            alerts.append({
+                'label': entry['label'],
+                'required_g': round(entry['required_g'], 1),
+                'remaining_g': round(remaining_g, 1),
+                'missing_g': round(entry['required_g'] - remaining_g, 1),
+                'files': entry['files']
+            })
+    return alerts
+
+@app.route('/api/ai/restock-check', methods=['GET'])
+@login_required
+def api_ai_restock_check():
+    conn = get_db()
+    try:
+        favorite_paths = [r['file_path'] for r in conn.execute(
+            "SELECT file_path FROM favorites WHERE user_id=?", (session['user_id'],)
+        ).fetchall()]
+    finally:
+        conn.close()
+
+    alerts = _check_restock_for_files(favorite_paths, session['user_id'])
+    return jsonify({"alerts": alerts, "checked_files": len(favorite_paths)}), 200
+
 def _get_required_weight_for_file(file_path):
     with slice_estimate_lock:
         precise = slice_estimate_results.get(file_path)
@@ -14979,6 +15545,87 @@ def _compute_estimated_cost(file_path, weight_g_hint=None):
         app_logger.info(f"[Cost] Erreur calcul coût pour {file_path}: {e}")
 
     return material_cost, elec_cost, total_cost, weight_g
+
+
+MATERIAL_CO2_FACTORS_KG_PER_KG = {
+    'pla': 1.4, 'petg': 2.0, 'abs': 2.6, 'asa': 2.7, 'tpu': 2.5,
+    'nylon': 5.0, 'pa': 5.0, 'pc': 3.5, 'pva': 2.2, 'hips': 2.4,
+}
+DEFAULT_MATERIAL_CO2_FACTOR_KG_PER_KG = 2.0  
+
+def _get_material_for_file(file_path, user_id):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT source_type, source_id, material FROM filament_assignments WHERE file_path=? AND user_id=?",
+            (file_path.replace('\\', '/'), user_id)
+        ).fetchone()
+        if not row:
+            return None
+        if row['material']:
+            return row['material']
+        if row['source_type'] == 'manual':
+            spool = conn.execute(
+                "SELECT material FROM manual_filament_spools WHERE id=? AND user_id=?",
+                (row['source_id'], user_id)
+            ).fetchone()
+            return spool['material'] if spool else None
+        return None
+    finally:
+        conn.close()
+
+def _compute_eco_estimate(file_path, user_id, weight_g_hint=None):
+    norm = file_path.replace('\\', '/')
+    weight_g = weight_g_hint
+    if weight_g is None:
+        weight_g, _src = _get_required_weight_for_file(norm)
+    if not weight_g:
+        return None
+
+    material = (_get_material_for_file(norm, user_id) or '').strip().lower()
+    factor = MATERIAL_CO2_FACTORS_KG_PER_KG.get(material, DEFAULT_MATERIAL_CO2_FACTOR_KG_PER_KG)
+    material_co2_g = round((weight_g / 1000) * factor * 1000, 1)
+
+    elec_co2_g = None
+    settings = load_settings() or {}
+    co2_factor_raw = settings.get('eco_elec_co2_g_per_kwh')
+    if co2_factor_raw not in (None, ''):
+        try:
+            co2_factor = float(co2_factor_raw)
+        except (TypeError, ValueError):
+            co2_factor = 0
+        if co2_factor > 0:
+            time_seconds = None
+            with slice_estimate_lock:
+                precise = slice_estimate_results.get(norm)
+            if precise and precise.get('status') == 'done':
+                time_seconds = precise.get('data', {}).get('time_seconds')
+            if time_seconds:
+                printer_power = float(settings.get('print_cost_printer_power') or 120)
+                kwh = (time_seconds / 3600) * (printer_power / 1000)
+                elec_co2_g = round(kwh * co2_factor, 1)
+
+    return {
+        "material": material or None,
+        "material_co2_g": material_co2_g,
+        "elec_co2_g": elec_co2_g,
+        "total_co2_g": round(material_co2_g + (elec_co2_g or 0), 1),
+        "weight_g": round(weight_g, 1),
+        "co2_factor_used": factor,
+    }
+
+@app.route('/api/eco/estimate', methods=['GET'])
+@login_required
+def api_eco_estimate():
+    file_path = (request.args.get('path') or '').strip()
+    if not file_path:
+        return jsonify({"error": "Chemin requis"}), 400
+    estimate = _compute_eco_estimate(file_path, session['user_id'])
+    if estimate is None:
+        return jsonify({"status": "pending",
+                         "message": "Poids pas encore disponible pour ce fichier."}), 202
+    return jsonify({"status": "done", **estimate}), 200
+
 
 def _consume_spool_filament(spoolman_url, spool_id, weight_g):
     try:

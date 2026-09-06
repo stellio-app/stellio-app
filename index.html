@@ -221,6 +221,7 @@
                     <i class="fa-solid fa-star"></i>
                     <span data-i18n="nav.favorites">Favoris</span>
                     <span class="badge" id="favorites-count" style="margin-left: auto; background: var(--accent); color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; display: none;">0</span>
+                    <span class="badge" id="favorites-restock-badge" data-i18n-title="favorites.restock_warning_title" title="Stock de filament insuffisant pour un ou plusieurs favoris" style="background: var(--danger); color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; display: none;">0</span>
                 </button>
 
                 <button class="nav-btn" data-nav-id="filters" onclick="openFiltersModal()" style="cursor: pointer;">
@@ -493,6 +494,13 @@
                                         <div class="stats-kpi-label" data-i18n="stats.avg_cost">Coût moyen / impression</div>
                                     </div>
                                 </div>
+                                <div class="stats-kpi-card">
+                                    <div class="stats-kpi-icon" style="background:rgba(248,113,113,0.15);color:#f87171;"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                                    <div class="stats-kpi-body">
+                                        <div class="stats-kpi-value" id="stat-failed-cost">—</div>
+                                        <div class="stats-kpi-label" data-i18n="stats.failed_cost">Coût des échecs</div>
+                                    </div>
+                                </div>
                             </div>
 
                             <div class="stats-panels">
@@ -636,6 +644,7 @@
 
                 <div id="page-settings" class="page">
                     <div class="settings-grid">
+                        <div class="settings-col" style="display:flex; flex-direction:column; gap:16px;">
 
                         <div class="accord-section">
                             <div class="accord-header" onclick="toggleAccord(this)">
@@ -963,8 +972,11 @@
                                         <button id="slicer-profiles-autodetect-btn" class="btn btn-ghost btn-sm" style="align-self:flex-end;" onclick="autoDetectSlicerProfiles()">
                                             <i class="fa-solid fa-magnifying-glass"></i> <span data-i18n="settings.slicer_profiles_autodetect">Détecter automatiquement</span>
                                         </button>
+                                        <button id="slicer-profiles-refresh-btn" class="btn btn-ghost btn-sm" style="align-self:flex-end;" onclick="refreshSlicerProfiles()" data-i18n-title="settings.slicer_profiles_refresh_hint" title="Vérifie immédiatement si les profils ont changé dans le slicer (Stellio le fait aussi automatiquement à chaque ouverture de cette page) — lecture seule, ne modifie jamais tes fichiers slicer.">
+                                            <i class="fa-solid fa-arrows-rotate"></i> <span data-i18n="settings.slicer_profiles_refresh">Actualiser depuis le slicer</span>
+                                        </button>
                                     </div>
-                                    <p class="settings-hint" style="margin-top:4px;" data-i18n="settings.slicer_profiles_autodetect_hint">La détection automatique n'assigne pas d'imprimante (plusieurs imprimantes peuvent partager le même slicer) — assigne-les ensuite manuellement dans la liste ci-dessous.</p>
+                                    <p class="settings-hint" style="margin-top:4px;" data-i18n="settings.slicer_profiles_autodetect_hint">Stellio détecte et importe désormais automatiquement les nouveaux profils (tous slicers confondus) à chaque ouverture de cette page — ce bouton force juste une vérification immédiate. Aucune imprimante n'est assignée automatiquement (plusieurs imprimantes peuvent partager le même slicer) — assigne-les ensuite manuellement dans la liste ci-dessous.</p>
 
                                     <div class="settings-row" style="margin-top:14px; border-top:1px solid var(--border); padding-top:12px;">
                                         <label data-i18n="settings.slicer_profiles_filter_label">Filtrer par imprimante</label>
@@ -990,6 +1002,8 @@
                                 </div>
                             </div>
                         </div>
+                        </div>
+                        <div class="settings-col" style="display:flex; flex-direction:column; gap:16px;">
 
                         <div class="accord-section">
                             <div class="accord-header" onclick="toggleAccord(this)">
@@ -1103,6 +1117,26 @@
                                         </div>
                                         <p id="cf-fixed-url-status" class="settings-hint" style="margin-top:10px;"></p>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="accord-section">
+                            <div class="accord-header" onclick="toggleAccord(this)">
+                                <span><i class="fa-solid fa-network-wired"></i> <span data-i18n="settings.remote_instances">Instances Stellio</span></span>
+                                <button id="add-remote-instance-btn" class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openAddRemoteInstanceModal()"><i class="fa-solid fa-plus"></i> <span data-i18n="actions.add">Ajouter</span></button>
+                                <i class="fa-solid fa-chevron-down accord-arrow"></i>
+                            </div>
+                            <div class="accord-body">
+                                <p class="settings-hint" data-i18n="settings.remote_instances_hint">Échange des fichiers directement avec une autre installation de Stellio sur ton réseau local, sans passer par le cloud. Ajoute chaque instance manuellement en vous donnant mutuellement votre "clé locale" ci-dessous.</p>
+                                <div class="settings-row" style="flex-direction:column; align-items:stretch; gap:6px; margin-top:10px;">
+                                    <label data-i18n="settings.remote_instances_local_key">Ma clé locale (à donner à l'autre instance)</label>
+                                    <div style="display:flex; gap:6px;">
+                                        <input type="text" id="local-peer-key-display" class="settings-select" readonly style="font-family:monospace; font-size:12px;">
+                                        <button class="btn btn-ghost btn-sm" onclick="copyLocalPeerKey()" data-i18n-title="actions.copy" title="Copier"><i class="fa-solid fa-copy"></i></button>
+                                    </div>
+                                </div>
+                                <div id="remote-instances-list" style="margin-top:14px; display:flex; flex-direction:column; gap:8px;">
+                                    <div class="empty-state small"><p data-i18n="settings.remote_instances_none">Aucune instance configurée</p></div>
                                 </div>
                             </div>
                         </div>
@@ -1291,6 +1325,7 @@
                                     </p>
                                 </div>
                             </div>
+                        </div>
                         </div>
                     </div>
                 </div>
@@ -1967,6 +2002,9 @@
                             <span class="nav-toggle-slider"></span>
                         </label>
                     </div>
+                    <button type="button" id="viewer-orientation-suggest-btn" class="btn btn-ghost btn-sm" style="font-size:12px; padding:6px 10px; white-space:nowrap;" onclick="suggestBestOrientation()" data-i18n-title="viewer.orientation_suggest_title" title="Analyser le mesh et suggérer la meilleure orientation">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i> <span data-i18n="viewer.orientation_suggest_btn">Suggérer</span>
+                    </button>
                     <button type="button" class="btn btn-primary" style="font-size:12px; padding:6px 12px; white-space:nowrap;" onclick="sendViewerFileToSlicer()" data-i18n-title="viewer.send_to_slicer_title" title="Ouvrir dans le slicer avec l'orientation choisie ci-dessus">
                         <i class="fa-solid fa-paper-plane"></i> <span data-i18n="viewer.send_to_slicer">Envoyer au slicer</span>
                     </button>
@@ -1975,7 +2013,8 @@
             </div>
             <div class="viewer-canvas-wrapper">
                 <div id="viewer-canvas-container" class="viewer-canvas"></div>
-                <div id="viewer-overhang-legend" style="display:none; position:absolute; left:16px; bottom:16px; background:rgba(20,22,28,0.85); border:1px solid var(--border); border-radius:var(--radius); padding:8px 12px; font-size:11px; color:var(--text-secondary); z-index:5;">
+                <div id="viewer-orientation-suggestions" style="display:none; position:absolute; left:16px; top:16px; width:250px; background:rgba(20,22,28,0.92); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; z-index:5;"></div>
+                <div id="viewer-overhang-legend" style="display:none; position:absolute; right:16px; bottom:16px; background:rgba(20,22,28,0.85); border:1px solid var(--border); border-radius:var(--radius); padding:8px 12px; font-size:11px; color:var(--text-secondary); z-index:5;">
                     <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
                         <span style="width:12px;height:12px;border-radius:3px;background:#4ea1d3;display:inline-block;"></span>
                         <span data-i18n="viewer.overhang_safe">Sans risque</span>
@@ -2387,6 +2426,41 @@
 			</div>
 		</div>
 	</div>
+	<div id="modal-add-remote-instance" class="modal hidden">
+		<div class="modal-content">
+			<div class="modal-header">
+				<h3><i class="fa-solid fa-network-wired"></i> <span data-i18n="settings.remote_instances_add_title">Ajouter une instance Stellio</span></h3>
+				<button class="modal-close" onclick="closeModal('modal-add-remote-instance')">×</button>
+			</div>
+			<div class="modal-body">
+				<form id="add-remote-instance-form">
+					<div class="input-group">
+						<label data-i18n="form.name">Nom</label>
+						<input type="text" id="remote-instance-name" data-i18n-placeholder="settings.remote_instances_name_ph" placeholder="Ex: Stellio Atelier" required>
+					</div>
+					<div class="input-group">
+						<label data-i18n="settings.remote_instances_url_label">Adresse (IP:port)</label>
+						<input type="text" id="remote-instance-url" placeholder="192.168.1.50:5000" required>
+					</div>
+					<div class="input-group">
+						<label data-i18n="settings.remote_instances_peer_key_label">Clé locale de l'autre instance</label>
+						<input type="text" id="remote-instance-peer-key" style="font-family:monospace;" placeholder="Copiée depuis les Paramètres de l'autre instance" required>
+					</div>
+					<div class="input-group">
+						<label data-i18n="settings.remote_instances_inbox_label">Dossier de réception (optionnel)</label>
+						<select id="remote-instance-inbox" class="settings-select">
+							<option value="" data-i18n="settings.remote_instances_inbox_default">Première source dossier disponible</option>
+						</select>
+						<small style="color:var(--text-secondary); font-size:11px; margin-top:4px; display:block;" data-i18n="settings.remote_instances_inbox_hint">Où les fichiers envoyés DEPUIS cette instance vers nous seront enregistrés.</small>
+					</div>
+					<button type="submit" class="btn btn-primary" style="width:100%; margin-top:10px;">
+						<i class="fa-solid fa-plus"></i> <span data-i18n="actions.add">Ajouter</span>
+					</button>
+				</form>
+			</div>
+		</div>
+	</div>
+
 	<div id="modal-add-printer" class="modal hidden">
 		<div class="modal-content">
 			<div class="modal-header">
@@ -2564,6 +2638,11 @@
                 <button class="file-action-row" id="ctx-share-btn">
                     <span class="file-action-icon"><i class="fa-solid fa-share-nodes"></i></span>
                     <span class="file-action-label" data-i18n="actions.share_file">Partager le fichier</span>
+                    <i class="fa-solid fa-chevron-right file-action-arrow"></i>
+                </button>
+                <button class="file-action-row" id="ctx-send-instance-btn">
+                    <span class="file-action-icon"><i class="fa-solid fa-network-wired"></i></span>
+                    <span class="file-action-label" data-i18n="settings.remote_instances_send_action">Envoyer vers une instance Stellio</span>
                     <i class="fa-solid fa-chevron-right file-action-arrow"></i>
                 </button>
                 <button class="file-action-row" id="ctx-cost-btn">

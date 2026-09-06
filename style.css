@@ -4420,22 +4420,26 @@ kbd {
 
 
 .settings-grid {
-    column-count: 2;
-    column-gap: 20px;
+    display: flex;
+    align-items: flex-start;
+    gap: 20px;
     padding: 24px;
     max-width: 1200px;
     margin: 0 auto;
 }
 
-.settings-grid > .accord-section {
-    break-inside: avoid;
-    -webkit-column-break-inside: avoid;
+.settings-grid > .settings-col {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+.settings-grid > .settings-col > .accord-section {
     margin-bottom: 20px;
 }
 
 @media (max-width: 860px) {
     .settings-grid {
-        column-count: 1;
+        flex-direction: column;
         max-width: 700px;
     }
 }
